@@ -1,0 +1,8 @@
+openai>=1.12.0
+pinecone>=7.0.0
+PyGithub>=2.1.1
+langgraph>=0.0.20
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+python-dotenv>=1.0.0
+
