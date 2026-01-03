@@ -17,7 +17,14 @@ class GitHubTool:
         self.repo = None
         
         if self.github and self.repo_name:
-            self.repo = self.github.get_repo(self.repo_name)
+            try:
+                self.repo = self.github.get_repo(self.repo_name)
+            except Exception as e:
+                # Repository not found or not accessible - continue without repo connection
+                # The tool can still use git CLI commands even without API access
+                print(f"Warning: Could not connect to GitHub repository '{self.repo_name}': {e}")
+                print("GitHub API features will be disabled, but git CLI commands will still work.")
+                self.repo = None
     
     def _run_git_command(self, command: List[str]) -> tuple[str, str, int]:
         """Run git command and return output."""
@@ -31,6 +38,12 @@ class GitHubTool:
             return result.stdout, result.stderr, result.returncode
         except Exception as e:
             return "", str(e), 1
+    
+    def pull_latest(self, branch: Optional[str] = None) -> tuple[bool, str]:
+        """Pull latest changes from remote."""
+        branch = branch or self.base_branch
+        stdout, stderr, code = self._run_git_command(["pull", "origin", branch])
+        return code == 0, stdout + stderr
     
     def create_branch(self, branch_name: str) -> bool:
         """Create and checkout a new branch."""

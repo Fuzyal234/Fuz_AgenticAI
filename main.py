@@ -8,7 +8,7 @@ from config.settings import settings
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description="🤖 FUZ_AgenticAI - Autonomous Code Modification & PR Agent"
+        description="🤖 AgenticAI - Autonomous Code Modification"
     )
     parser.add_argument(
         "request",
@@ -33,7 +33,7 @@ def main():
     if args.request:
         user_request = args.request
     else:
-        print("🤖 FUZ_AgenticAI - Autonomous Code Modification & PR Agent")
+        print("🤖 FUZ_AgenticAI - Autonomous Code Modification & PR Agent this is the testing flow working")
         print("\nEnter your request (or Ctrl+D to exit):")
         try:
             user_request = input("> ")
@@ -45,10 +45,13 @@ def main():
         print("Error: Request cannot be empty")
         sys.exit(1)
     
-    # Validate configuration
-    if not settings.openai_api_key:
-        print("Error: OPENAI_API_KEY not set")
-        sys.exit(1)
+    # Validate configuration (only if not using Ollama)
+    if not settings.use_ollama:
+        if not settings.openai_api_key:
+            print("Error: Either USE_OLLAMA=true or OPENAI_API_KEY must be set")
+            print("  - For free local LLM: Set USE_OLLAMA=true in .env")
+            print("  - For OpenAI/OpenRouter: Set OPENAI_API_KEY in .env")
+            sys.exit(1)
     
     if not settings.pinecone_api_key:
         print("Warning: PINECONE_API_KEY not set - memory features will be limited")
@@ -78,12 +81,32 @@ def main():
         if result.get("pr_url"):
             print(f"✅ Pull Request Created: {result['pr_url']}")
         
-        if result.get("final_status") == "success":
+        # Set default status if not set
+        final_status = result.get('final_status')
+        if not final_status:
+            # Determine status based on what happened
+            if result.get("pr_url"):
+                final_status = "pr_created"
+            elif result.get("code_changes"):
+                final_status = "code_changes_made"
+            elif result.get("plan"):
+                final_status = "planning_completed"
+            else:
+                final_status = "completed"
+            result['final_status'] = final_status
+        
+        if final_status == "success":
             print("✅ Status: SUCCESS")
-        elif result.get("final_status") == "ci_failed":
+        elif final_status == "ci_failed":
             print("⚠️  Status: CI FAILED (check PR for details)")
+        elif final_status == "pr_created":
+            print("✅ Status: PR CREATED")
+        elif final_status == "code_changes_made":
+            print("✅ Status: CODE CHANGES MADE")
+        elif final_status == "planning_completed":
+            print("ℹ️  Status: PLANNING COMPLETED (no execution needed)")
         else:
-            print(f"⚠️  Status: {result.get('final_status', 'UNKNOWN')}")
+            print(f"ℹ️  Status: {final_status.upper()}")
         
         if result.get("errors"):
             print(f"\n⚠️  Errors encountered: {len(result['errors'])}")
