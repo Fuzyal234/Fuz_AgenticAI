@@ -1,6 +1,5 @@
 """GitHub API and Git CLI tools."""
 import subprocess
-import os
 from typing import Optional, Dict, List, Any
 from github import Github
 from config.settings import settings
@@ -47,12 +46,12 @@ class GitHubTool:
     
     def create_branch(self, branch_name: str) -> bool:
         """Create and checkout a new branch."""
-        stdout, stderr, code = self._run_git_command(["checkout", "-b", branch_name])
+        _, _, code = self._run_git_command(["checkout", "-b", branch_name])
         return code == 0
     
     def get_current_branch(self) -> str:
         """Get current branch name."""
-        stdout, stderr, code = self._run_git_command(["rev-parse", "--abbrev-ref", "HEAD"])
+        stdout, _, code = self._run_git_command(["rev-parse", "--abbrev-ref", "HEAD"])
         return stdout.strip() if code == 0 else ""
     
     def commit_changes(self, message: str, files: Optional[List[str]] = None) -> bool:
@@ -65,7 +64,7 @@ class GitHubTool:
             self._run_git_command(["add", "."])
         
         # Commit
-        stdout, stderr, code = self._run_git_command(
+        _, _, code = self._run_git_command(
             ["commit", "-m", message]
         )
         return code == 0
@@ -73,7 +72,7 @@ class GitHubTool:
     def push_branch(self, branch_name: Optional[str] = None) -> bool:
         """Push branch to remote."""
         branch = branch_name or self.get_current_branch()
-        stdout, stderr, code = self._run_git_command(
+        _, _, code = self._run_git_command(
             ["push", "-u", "origin", branch]
         )
         return code == 0
@@ -81,7 +80,7 @@ class GitHubTool:
     def get_diff(self, base_branch: Optional[str] = None) -> str:
         """Get diff between current branch and base."""
         base = base_branch or self.base_branch
-        stdout, stderr, code = self._run_git_command(
+        stdout, _, code = self._run_git_command(
             ["diff", f"origin/{base}"]
         )
         return stdout if code == 0 else ""
@@ -158,7 +157,7 @@ class GitHubTool:
                     "created_at": comment.created_at.isoformat()
                 })
             return comments
-        except Exception as e:
+        except Exception:
             return []
     
     def get_file_contents(self, file_path: str, ref: Optional[str] = None) -> Optional[str]:
@@ -173,7 +172,7 @@ class GitHubTool:
                 import base64
                 return base64.b64decode(contents.content).decode("utf-8")
             return contents.content
-        except Exception as e:
+        except Exception:
             return None
     
     def list_files(self, path: str = "", ref: Optional[str] = None) -> List[str]:
@@ -189,6 +188,6 @@ class GitHubTool:
                 return [item.path for item in contents]
             else:
                 return [contents.path]
-        except Exception as e:
+        except Exception:
             return []
 
