@@ -1,6 +1,7 @@
 """LangGraph orchestration for multi-agent workflow."""
 from typing import TypedDict, List, Dict, Any, Optional
 from langgraph.graph import StateGraph, END
+import os
 from agents.planner import PlannerAgent
 from agents.coder import CodeAgent
 from agents.tester import TestAgent
@@ -146,6 +147,74 @@ class AgentOrchestrator:
         
         return state
     
+    def _convert_lrm_step_to_enhanced(self, lrm_step: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert LRM step to enhanced step format."""
+        action = lrm_step.get("description", "") + ": " + lrm_step.get("conclusion", "")
+        analysis = lrm_step.get("analysis", "")
+        
+        # Infer agent from description/analysis
+        desc_lower = (lrm_step.get("description", "") + " " + analysis).lower()
+        agent = "coder"  # Default
+        if "test" in desc_lower or "verify" in desc_lower:
+            agent = "tester"
+        elif "review" in desc_lower or "check" in desc_lower:
+            agent = "reviewer"
+        
+        return {
+            "agent": agent,
+            "action": action,
+            "files": lrm_step.get("files", []),
+            "dependencies": lrm_step.get("dependencies", []),
+            "lrm_analysis": analysis
+        }
+    
+    def _create_structured_steps(self, lrm_steps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Create structured steps from LRM steps."""
+        enhanced_steps = []
+        for lrm_step in lrm_steps:
+            enhanced_steps.append({
+                "agent": lrm_step.get("agent", "coder"),
+                "action": lrm_step.get("description", "") + ": " + lrm_step.get("conclusion", ""),
+                "files": lrm_step.get("files", []),
+                "dependencies": lrm_step.get("dependencies", []),
+                "lrm_analysis": lrm_step.get("analysis", "")
+            })
+        return enhanced_steps
+    
+    def _process_lrm_steps(self, lrm_steps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Process LRM steps and convert to enhanced format."""
+        has_structure = all(
+            "agent" in step and "files" in step 
+            for step in lrm_steps
+        )
+        
+        if has_structure:
+            return self._create_structured_steps(lrm_steps)
+        
+        # Convert unstructured steps
+        return [self._convert_lrm_step_to_enhanced(step) for step in lrm_steps]
+    
+    def _merge_lrm_steps_into_plan(self, plan: Dict[str, Any], enhanced_steps: List[Dict[str, Any]], confidence: float):
+        """Merge LRM steps into plan based on confidence."""
+        if confidence > 0.7:
+            plan["steps"] = enhanced_steps
+        else:
+            plan["steps"] = enhanced_steps + plan.get("steps", [])
+    
+    def _update_plan_metadata(self, plan: Dict[str, Any], reasoning_result: Dict[str, Any], lrm_reasoning: Dict[str, Any]):
+        """Update plan metadata with LRM insights."""
+        if reasoning_result.get("understanding"):
+            plan["understanding"] = reasoning_result.get("understanding")
+        if reasoning_result.get("estimated_complexity"):
+            plan["estimated_complexity"] = reasoning_result.get("estimated_complexity")
+        if reasoning_result.get("risks"):
+            existing_risks = plan.get("risks", [])
+            plan["risks"] = list(set(existing_risks + reasoning_result.get("risks", [])))
+        
+        plan["lrm_reasoning"] = lrm_reasoning
+        plan["lrm_recommendation"] = reasoning_result.get("recommended_approach", "")
+        plan["lrm_confidence"] = reasoning_result.get("confidence", 0.5)
+    
     def _reason_node(self, state: AgentState) -> AgentState:
         """LRM reasoning node for complex tasks."""
         if not self.lrm_agent:
@@ -162,79 +231,16 @@ class AgentOrchestrator:
         )
         
         # Enhance plan with LRM reasoning
-        if reasoning_result.get("confidence", 0) > 0.5:
-            # Use LRM's structured plan
+        confidence = reasoning_result.get("confidence", 0)
+        if confidence > 0.5:
             lrm_reasoning = reasoning_result.get("reasoning", {})
             lrm_steps = lrm_reasoning.get("steps", [])
             
-            # If LRM provided detailed steps with agent and files, use them
-            if lrm_steps and len(lrm_steps) > 0:
-                # Check if steps have the required structure (agent, files, etc.)
-                has_structure = all(
-                    "agent" in step and "files" in step 
-                    for step in lrm_steps
-                )
-                
-                if has_structure:
-                    # LRM provided fully structured steps - use them directly
-                    enhanced_steps = []
-                    for lrm_step in lrm_steps:
-                        enhanced_steps.append({
-                            "agent": lrm_step.get("agent", "coder"),
-                            "action": lrm_step.get("description", "") + ": " + lrm_step.get("conclusion", ""),
-                            "files": lrm_step.get("files", []),
-                            "dependencies": lrm_step.get("dependencies", []),
-                            "lrm_analysis": lrm_step.get("analysis", "")
-                        })
-                    
-                    # Replace plan steps with LRM's structured steps if confidence is high
-                    if reasoning_result.get("confidence", 0) > 0.7:
-                        plan["steps"] = enhanced_steps
-                    else:
-                        # Merge: prepend LRM steps to existing plan
-                        plan["steps"] = enhanced_steps + plan.get("steps", [])
-                else:
-                    # LRM steps don't have full structure - convert them
-                    enhanced_steps = []
-                    for lrm_step in lrm_steps:
-                        action = lrm_step.get("description", "") + ": " + lrm_step.get("conclusion", "")
-                        analysis = lrm_step.get("analysis", "")
-                        
-                        # Infer agent from description/analysis
-                        desc_lower = (lrm_step.get("description", "") + " " + analysis).lower()
-                        agent = "coder"  # Default
-                        if "test" in desc_lower or "verify" in desc_lower:
-                            agent = "tester"
-                        elif "review" in desc_lower or "check" in desc_lower:
-                            agent = "reviewer"
-                        
-                        enhanced_steps.append({
-                            "agent": agent,
-                            "action": action,
-                            "files": lrm_step.get("files", []),
-                            "dependencies": lrm_step.get("dependencies", []),
-                            "lrm_analysis": analysis
-                        })
-                    
-                    # Merge with existing plan
-                    if reasoning_result.get("confidence", 0) > 0.7:
-                        plan["steps"] = enhanced_steps
-                    else:
-                        plan["steps"] = enhanced_steps + plan.get("steps", [])
+            if lrm_steps:
+                enhanced_steps = self._process_lrm_steps(lrm_steps)
+                self._merge_lrm_steps_into_plan(plan, enhanced_steps, confidence)
             
-            # Update plan metadata with LRM insights
-            if reasoning_result.get("understanding"):
-                plan["understanding"] = reasoning_result.get("understanding")
-            if reasoning_result.get("estimated_complexity"):
-                plan["estimated_complexity"] = reasoning_result.get("estimated_complexity")
-            if reasoning_result.get("risks"):
-                # Merge risks
-                existing_risks = plan.get("risks", [])
-                plan["risks"] = list(set(existing_risks + reasoning_result.get("risks", [])))
-            
-            plan["lrm_reasoning"] = lrm_reasoning
-            plan["lrm_recommendation"] = reasoning_result.get("recommended_approach", "")
-            plan["lrm_confidence"] = reasoning_result.get("confidence", 0.5)
+            self._update_plan_metadata(plan, reasoning_result, lrm_reasoning)
             state["plan"] = plan
         
         state["reasoning_results"] = reasoning_result
@@ -264,6 +270,90 @@ class AgentOrchestrator:
         
         return "code"
     
+    def _extract_branch_name(self, task: str, user_request: str, current_step: int) -> str:
+        """Extract branch name from task or user request."""
+        import re
+        task_lower = task.lower()
+        branch_match = re.search(r'(?:branch|checkout).*?(\S+[-_]\w+)', task_lower)
+        if branch_match:
+            return branch_match.group(1).upper() if "TESTIMG" in task.upper() else branch_match.group(1)
+        
+        # Try to find branch name from user request
+        branch_match = re.search(r'(\S+[-_]\w+)', user_request.upper())
+        return branch_match.group(1) if branch_match else f"branch-{current_step}"
+    
+    def _handle_git_operations(self, state: AgentState, task: str, current_step: int) -> bool:
+        """Handle Git-only operations. Returns True if handled."""
+        task_lower = task.lower()
+        is_git_operation = any(cmd in task_lower for cmd in ["git pull", "pull", "checkout", "create branch", "branch"])
+        
+        if not is_git_operation:
+            return False
+        
+        if "pull" in task_lower:
+            success, output = self.github_tool.pull_latest()
+            if not success:
+                state["errors"].append(f"Git pull failed: {output}")
+            else:
+                print(f"✅ Pulled latest changes: {output[:100]}")
+        
+        if "branch" in task_lower or "checkout" in task_lower:
+            branch_name = self._extract_branch_name(task, state.get("user_request", ""), current_step)
+            success = self.github_tool.create_branch(branch_name)
+            if success:
+                state["branch_name"] = branch_name
+                print(f"✅ Created branch: {branch_name}")
+            else:
+                state["errors"].append(f"Failed to create branch: {branch_name}")
+        
+        return True
+    
+    def _infer_files_from_task(self, task: str) -> List[Optional[str]]:
+        """Infer file paths from task description."""
+        task_lower = task.lower()
+        if "main" in task_lower or "entry" in task_lower:
+            return ["main.py"]
+        if "config" in task_lower or "setting" in task_lower:
+            return ["config/settings.py"]
+        if "test" in task_lower:
+            return ["test.py"]
+        return [None]  # Signal to generate without specific file
+    
+    def _get_existing_code(self, file_path: Optional[str]) -> Optional[str]:
+        """Get existing code from file if it exists."""
+        if not file_path:
+            return None
+        
+        # Try to get from GitHub API first
+        existing_code = self.github_tool.get_file_contents(file_path)
+        if existing_code:
+            return existing_code
+        
+        # If not found via API, try reading locally
+        if os.path.exists(file_path):
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    return f.read()
+            except Exception:
+                pass
+        
+        return None
+    
+    def _generate_code_changes(self, task: str, files: List[Optional[str]]) -> List[Dict[str, Any]]:
+        """Generate code changes for given task and files."""
+        code_changes = []
+        for file_path in files if files else [None]:
+            existing_code = self._get_existing_code(file_path)
+            print(f"🔧 Executing code generation for task: {task[:80]}...")
+            change = self.coder.generate_code(
+                task=task,
+                file_path=file_path,
+                existing_code=existing_code,
+                context=self._get_repo_context()
+            )
+            code_changes.append(change)
+        return code_changes
+    
     def _code_node(self, state: AgentState) -> AgentState:
         """Code generation node."""
         plan = state.get("plan", {})
@@ -272,10 +362,8 @@ class AgentOrchestrator:
         
         # Check if all steps are completed
         if current_step >= len(steps):
-            # All steps done - mark as complete to prevent infinite loops
             if not state.get("final_status"):
                 state["final_status"] = "steps_completed"
-            # Add a flag to prevent re-processing
             state["all_steps_completed"] = True
             return state
         
@@ -285,78 +373,34 @@ class AgentOrchestrator:
             return state
         
         step = steps[current_step]
-        
         if step.get("agent") != "coder":
             state["current_step"] = current_step + 1
             return state
         
-        # Get task and files
         task = step.get("action", "")
         files = step.get("files", [])
         
-        # Check if this is a Git operation (pull, checkout, branch creation, etc.)
-        task_lower = task.lower()
-        is_git_operation = any(cmd in task_lower for cmd in ["git pull", "pull", "checkout", "create branch", "branch"])
-        
-        if is_git_operation and not files:
-            # Handle Git-only operations (no code files to modify)
-            if "pull" in task_lower:
-                # Pull latest changes
-                success, output = self.github_tool.pull_latest()
-                if not success:
-                    state["errors"].append(f"Git pull failed: {output}")
-                else:
-                    print(f"✅ Pulled latest changes: {output[:100]}")
-            
-            # Extract branch name from task if creating a branch
-            if "branch" in task_lower or "checkout" in task_lower:
-                # Try to extract branch name from task
-                import re
-                branch_match = re.search(r'(?:branch|checkout).*?(\S+[-_]\w+)', task_lower)
-                if branch_match:
-                    branch_name = branch_match.group(1).upper() if "TESTIMG" in task.upper() else branch_match.group(1)
-                else:
-                    # Try to find branch name from user request
-                    user_request = state.get("user_request", "")
-                    branch_match = re.search(r'(\S+[-_]\w+)', user_request.upper())
-                    branch_name = branch_match.group(1) if branch_match else f"branch-{current_step}"
-                
-                success = self.github_tool.create_branch(branch_name)
-                if success:
-                    state["branch_name"] = branch_name
-                    print(f"✅ Created branch: {branch_name}")
-                else:
-                    state["errors"].append(f"Failed to create branch: {branch_name}")
-            
-            # Mark step as completed even without code changes
+        # Handle Git operations
+        if self._handle_git_operations(state, task, current_step):
             state["current_step"] = current_step + 1
             state["completed_steps"].append(step)
             return state
         
         # Normal code generation path
-        code_changes = []
+        if not files and task:
+            files = self._infer_files_from_task(task)
         
-        for file_path in files:
-            # Get existing code if file exists
-            existing_code = self.github_tool.get_file_contents(file_path)
-            
-            # Generate code
-            change = self.coder.generate_code(
-                task=task,
-                file_path=file_path,
-                existing_code=existing_code,
-                context=self._get_repo_context()
-            )
-            code_changes.append(change)
+        code_changes = self._generate_code_changes(task, files)
         
-        # Apply changes only if there are code changes
         if code_changes:
+            print(f"✅ Generated {len(code_changes)} code change(s)")
             self.coder.apply_changes(code_changes)
             state["code_changes"] = state.get("code_changes", []) + code_changes
+        else:
+            print("⚠️  No code changes generated - check task and files")
         
         state["current_step"] = current_step + 1
         state["completed_steps"].append(step)
-        
         return state
     
     def _review_node(self, state: AgentState) -> AgentState:
@@ -464,6 +508,31 @@ class AgentOrchestrator:
         
         return state
     
+    def _apply_lrm_fixes(self, code_changes: List[Dict[str, Any]], debug_result: Dict[str, Any]):
+        """Apply fixes using LRM's root cause analysis."""
+        root_cause = debug_result.get("root_cause", "")
+        recommended_fix = debug_result.get("recommended_fix", "")
+        error_message = f"{root_cause}\nRecommended: {recommended_fix}"
+        
+        for change in code_changes:
+            fixed = self.coder.fix_code(
+                error_message=error_message,
+                file_path=change.get("file_path", ""),
+                existing_code=change.get("code", "")
+            )
+            change["code"] = fixed.get("code", change.get("code"))
+    
+    def _apply_standard_fixes(self, errors: List[str], code_changes: List[Dict[str, Any]]):
+        """Apply standard fixes without LRM."""
+        for error in errors[-3:]:
+            for change in code_changes:
+                fixed = self.coder.fix_code(
+                    error_message=error,
+                    file_path=change.get("file_path", ""),
+                    existing_code=change.get("code", "")
+                )
+                change["code"] = fixed.get("code", change.get("code"))
+    
     def _fix_node(self, state: AgentState) -> AgentState:
         """Fix code based on errors."""
         # Safety check: stop fixing if max iterations reached
@@ -483,11 +552,8 @@ class AgentOrchestrator:
         
         # Use LRM for complex debugging if enabled
         if self.lrm_agent and len(errors) > 1:
-            # Multiple errors suggest complex issue - use LRM
             error_description = "\n".join(errors[-3:])
             error_logs = state.get("test_results", {}).get("output", "")
-            
-            # Get code context
             code_context = "\n".join([
                 f"File: {c.get('file_path')}\n{c.get('code', '')[:500]}"
                 for c in code_changes[:3]
@@ -499,30 +565,10 @@ class AgentOrchestrator:
                 code_context=code_context
             )
             
-            # Use LRM's root cause analysis
             if debug_result.get("confidence", 0) > 0.6:
-                # High confidence - use LRM's recommended fix
-                root_cause = debug_result.get("root_cause", "")
-                recommended_fix = debug_result.get("recommended_fix", "")
-                
-                # Apply LRM's reasoning to fixes
-                for change in code_changes:
-                    fixed = self.coder.fix_code(
-                        error_message=f"{root_cause}\nRecommended: {recommended_fix}",
-                        file_path=change.get("file_path", ""),
-                        existing_code=change.get("code", "")
-                    )
-                    change["code"] = fixed.get("code", change.get("code"))
+                self._apply_lrm_fixes(code_changes, debug_result)
         else:
-            # Standard fixing without LRM
-            for error in errors[-3:]:
-                for change in code_changes:
-                    fixed = self.coder.fix_code(
-                        error_message=error,
-                        file_path=change.get("file_path", ""),
-                        existing_code=change.get("code", "")
-                    )
-                    change["code"] = fixed.get("code", change.get("code"))
+            self._apply_standard_fixes(errors, code_changes)
         
         # Re-apply fixes
         self.coder.apply_changes(code_changes)
@@ -533,39 +579,53 @@ class AgentOrchestrator:
         
         return state
     
+    def _check_max_iterations(self, state: AgentState) -> Optional[str]:
+        """Check if max iterations reached. Returns 'end' if reached, None otherwise."""
+        current_iterations = state.get("iterations", 0)
+        max_iterations = state.get("max_iterations", 10)
+        if current_iterations >= max_iterations:
+            state["final_status"] = "max_iterations_reached_in_code"
+            return "end"
+        return None
+    
+    def _decide_after_all_steps_with_code(self, state: AgentState, current_iterations: int, max_iterations: int) -> str:
+        """Decide next step when all steps completed with code changes."""
+        if state.get("test_results") and current_iterations >= max_iterations - 1:
+            return "github"
+        if state.get("test_results") and current_iterations >= max_iterations:
+            return "end"
+        if not state.get("test_results"):
+            return "test"
+        return "test"
+    
+    def _decide_after_all_steps_no_code(self, state: AgentState) -> str:
+        """Decide next step when all steps completed but no code changes."""
+        if state.get("branch_name"):
+            state["final_status"] = "git_operations_completed"
+        return "end"
+    
     def _code_decision(self, state: AgentState) -> str:
         """Decide where to go after code node - replaces _should_review for better control."""
         # CRITICAL: Check max iterations FIRST to prevent infinite loops
-        current_iterations = state.get("iterations", 0)
-        max_iterations = state.get("max_iterations", 10)
-        
-        if current_iterations >= max_iterations:
-            state["final_status"] = "max_iterations_reached_in_code"
-            return "end"  # End directly
+        max_check = self._check_max_iterations(state)
+        if max_check:
+            return max_check
         
         plan = state.get("plan", {})
         steps = plan.get("steps", [])
         current_step = state.get("current_step", 0)
+        current_iterations = state.get("iterations", 0)
+        max_iterations = state.get("max_iterations", 10)
         
         # If all steps completed AND we have code changes
         if current_step >= len(steps) and state.get("code_changes"):
-            # All steps done
-            # If we've already tested multiple times, skip to github/end
-            if state.get("test_results") and current_iterations >= max_iterations - 1:
-                return "github"  # Skip directly to github
-            # If we've tested and failed too many times, end
-            if state.get("test_results") and current_iterations >= max_iterations:
-                return "end"
-            # Haven't tested yet, run test once
-            if not state.get("test_results"):
-                return "test"
-            # Already tested once but failed - give it one more try
-            return "test"
+            return self._decide_after_all_steps_with_code(state, current_iterations, max_iterations)
         
-        # If all steps completed but no code changes, end
+        # If all steps completed but no code changes (only Git operations)
         if current_step >= len(steps) and not state.get("code_changes"):
-            return "end"
+            return self._decide_after_all_steps_no_code(state)
         
+        # Check if next step is reviewer
         if current_step < len(steps):
             step = steps[current_step]
             if step.get("agent") == "reviewer":
@@ -576,10 +636,8 @@ class AgentOrchestrator:
         completed_coding = len([s for s in state.get("completed_steps", []) if s.get("agent") == "coder"])
         
         if completed_coding >= len(coding_steps) and current_step >= len(steps):
-            # All coding done, run test if not already done
             if not state.get("test_results"):
                 return "test"
-            # Already tested, proceed to github
             return "github"
         
         # More steps to process - route to test which will eventually loop back if needed
@@ -593,28 +651,19 @@ class AgentOrchestrator:
         
         if current_iterations >= max_iterations:
             state["final_status"] = "max_iterations_reached_in_review"
-            # Route directly to github to end workflow
             return "github"
         
         plan = state.get("plan", {})
         steps = plan.get("steps", [])
         current_step = state.get("current_step", 0)
+        all_steps_done = current_step >= len(steps)
         
         # If all steps completed AND we have code changes
-        if current_step >= len(steps) and state.get("code_changes"):
-            # All steps done
-            # If we've already tested multiple times (have test_results and iterations > 0), skip to github
-            if state.get("test_results") and state.get("iterations", 0) > 0:
-                return "github"  # Skip directly to github to end workflow
-            # Haven't tested yet or first test, run test once
-            if not state.get("test_results"):
-                return "test"
-            # Already tested once but failed - if iterations high, go to github
-            if state.get("iterations", 0) >= max_iterations - 1:
-                return "github"
-            return "test"
+        if all_steps_done and state.get("code_changes"):
+            return self._decide_after_all_steps_with_code(state, current_iterations, max_iterations)
         
-        if current_step < len(steps):
+        # Check if next step is reviewer
+        if not all_steps_done:
             step = steps[current_step]
             if step.get("agent") == "reviewer":
                 return "review"
@@ -623,19 +672,8 @@ class AgentOrchestrator:
         coding_steps = [s for s in steps if s.get("agent") == "coder"]
         completed_coding = len([s for s in state.get("completed_steps", []) if s.get("agent") == "coder"])
         
-        if completed_coding >= len(coding_steps) and current_step >= len(steps):
-            # All coding done, run test if not already done
-            if not state.get("test_results"):
-                return "test"
-            # Already tested, proceed to github
-            return "github"
-        
-        # If there are more steps, continue with code generation
-        if current_step < len(steps):
-            # More steps to process - need to route back to code
-            # But we can't route back to code from here, so route to test
-            # This might create a loop, so ensure test_decision handles it
-            return "test"
+        if completed_coding >= len(coding_steps) and all_steps_done:
+            return "test" if not state.get("test_results") else "github"
         
         # Default: proceed to test
         return "test"
